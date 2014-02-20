@@ -26,7 +26,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using InvalidDataException=MediaPortal.Utilities.Exceptions.InvalidDataException;
+using InvalidDataException = MediaPortal.Utilities.Exceptions.InvalidDataException;
 
 namespace UPnP.Infrastructure.Utils.HTTP
 {
@@ -42,6 +42,12 @@ namespace UPnP.Infrastructure.Utils.HTTP
   public abstract class SimpleHTTPMessage
   {
     public const string DEFAULT_HTTP_VERSION = "HTTP/1.1";
+    public const char CR = '\r';
+    public const char LF = '\n';
+    static readonly string CRLF = string.Format("{0}{1}", CR, LF);
+
+    const int HEADER_BUF_INC = 2048;
+    const int BODY_BUFF_INC = 4096;
 
     protected string _httpVersion = DEFAULT_HTTP_VERSION;
     protected IDictionary<string, string> _headers = new Dictionary<string, string>();
@@ -63,28 +69,28 @@ namespace UPnP.Infrastructure.Utils.HTTP
     {
       get
       {
-        index = index.ToUpper();
-        return _headers.ContainsKey(index) ? _headers[index.ToUpper()] : null;
+        index = index.ToUpperInvariant();
+        return _headers.ContainsKey(index) ? _headers[index.ToUpperInvariant()] : null;
       }
     }
 
     public bool ContainsHeader(string key)
     {
-      return _headers.ContainsKey(key.ToUpper());
+      return _headers.ContainsKey(key.ToUpperInvariant());
     }
 
     public void SetHeader(string key, string value)
     {
-      _headers[key.ToUpper()] = value;
+      _headers[key.ToUpperInvariant()] = value;
     }
 
     public byte[] Encode()
     {
       StringBuilder builder = new StringBuilder(1024);
       builder.Append(EncodeStartingLine());
-      builder.Append("\r\n");
+      builder.Append(CRLF);
       AddEncodedHeaders(builder);
-      builder.Append("\r\n");
+      builder.Append(CRLF);
       return EncodeHeaderAndBody(builder.ToString(), _bodyBuffer);
     }
 
@@ -106,7 +112,7 @@ namespace UPnP.Infrastructure.Utils.HTTP
         builder.Append(line.Key);
         builder.Append(": ");
         builder.Append(line.Value);
-        builder.Append("\r\n");
+        builder.Append(CRLF);
       }
     }
 
@@ -147,38 +153,51 @@ namespace UPnP.Infrastructure.Utils.HTTP
     /// is malformed.</exception>
     internal void ParseHeaderAndBody(Stream stream, out string firstLine)
     {
-      const int HEADER_BUF_INC = 2048;
       byte[] data = new byte[HEADER_BUF_INC];
       int numHeaderBytes = 0;
       int b;
+      int delimiterLength = 3;
       while ((b = stream.ReadByte()) != -1)
       {
         if (numHeaderBytes - 1 == data.Length)
           IncreaseBuffer(data, HEADER_BUF_INC);
-        data[numHeaderBytes++] = (byte) b;
-        if (numHeaderBytes > 4 && data[numHeaderBytes-3] == '\r' && data[numHeaderBytes-2] == '\n' &&
-            data[numHeaderBytes-1] == '\r' && data[numHeaderBytes] == '\n')
+        data[numHeaderBytes] = (byte)b;
+
+        // Regular CRLF line ending
+        if (numHeaderBytes > 4 &&
+          data[numHeaderBytes - 3] == CR && data[numHeaderBytes - 2] == LF &&
+          data[numHeaderBytes - 1] == CR && data[numHeaderBytes] == LF)
           break;
+
+        // Single LF line ending
+        if (numHeaderBytes > 2 && data[numHeaderBytes - 1] == LF && data[numHeaderBytes] == LF)
+        {
+          delimiterLength = 1;
+          break;
+        }
+
+        numHeaderBytes++;
       }
-      string header = Encoding.UTF8.GetString(data, 0, numHeaderBytes - 4);
-      string[] lines = header.Split(new string[] {"\r\n"}, StringSplitOptions.None);
+
+      string header = Encoding.UTF8.GetString(data, 0, numHeaderBytes - delimiterLength);
+      string[] lines = header.Split(new[] { LF }, StringSplitOptions.None);
       if (lines.Length < 1)
         throw new InvalidDataException("Invalid empty HTTP header");
 
       int contentLength = -1;
       firstLine = lines[0].Trim();
-      for (int i=1; i<lines.Length; i++)
+      for (int i = 1; i < lines.Length; i++)
       {
-        string line = lines[i].Trim();
+        string line = lines[i].Trim().Trim(CR); // Also remove Carriage Return, as we splitted on Newline only
         int index = line.IndexOf(':');
         if (index == -1)
           throw new InvalidDataException("Invalid HTTP header line '{0}'", line);
         try
         {
           string key = line.Substring(0, index).Trim();
-          string value = line.Substring(index+1).Trim();
+          string value = line.Substring(index + 1).Trim();
           SetHeader(key, value);
-          if (key.ToUpper() == "CONTENT-LENGTH" && !int.TryParse(value, out contentLength))
+          if (key.ToUpperInvariant() == "CONTENT-LENGTH" && !int.TryParse(value, out contentLength))
             contentLength = -1;
         }
         catch (ArgumentException e)
@@ -189,7 +208,6 @@ namespace UPnP.Infrastructure.Utils.HTTP
       byte[] bodyBuffer;
       if (contentLength == -1)
       {
-        const int BODY_BUFF_INC = 4096;
         bodyBuffer = new byte[BODY_BUFF_INC];
         contentLength = 0;
         int len;
@@ -214,9 +232,9 @@ namespace UPnP.Infrastructure.Utils.HTTP
     {
       StringBuilder sb = new StringBuilder(1024);
       sb.Append(EncodeStartingLine());
-      sb.Append("\r\n");
+      sb.Append(CRLF);
       AddEncodedHeaders(sb);
-      sb.Append("\r\n");
+      sb.Append(CRLF);
       return sb.ToString();
     }
   }
